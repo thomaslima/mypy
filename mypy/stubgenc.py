@@ -191,15 +191,21 @@ def generate_c_function_stub(module: ModuleType,
                                             sigs.get(name, '(*args, **kwargs)')),
                                         ret_type=ret_type)]
         elif class_name and self_var:
-            args = inferred[0].args
-            if not args or args[0].name != self_var:
-                args.insert(0, ArgSig(name=self_var))
+            for _inferred in inferred:
+                args = _inferred.args
+                if not args or args[0].name != self_var:
+                    args.insert(0, ArgSig(name=self_var))
 
     is_overloaded = len(inferred) > 1 if inferred else False
     if is_overloaded:
         imports.append('from typing import overload')
+    _docstr = getattr(obj, '__doc__', None)
     if inferred:
-        for signature in inferred:
+        for isig, signature in enumerate(inferred):
+            if _docstr and len(_docstr.split("------\n")) == len(inferred):
+                docstr = _docstr.split("------\n")[isig].strip()
+            else:
+                docstr = _docstr
             sig = []
             for arg in signature.args:
                 if arg.name == self_var:
@@ -219,11 +225,21 @@ def generate_c_function_stub(module: ModuleType,
 
             if is_overloaded:
                 output.append('@overload')
-            output.append('def {function}({args}) -> {ret}: ...'.format(
-                function=name,
-                args=", ".join(sig),
-                ret=strip_or_import(signature.ret_type, module, imports)
-            ))
+            if docstr is not None:
+                output.append('def {function}({args}) -> {ret}:'.format(
+                    function=name,
+                    args=", ".join(sig),
+                    ret=strip_or_import(signature.ret_type, module, imports)
+                ))
+                output.append('    """')
+                output.extend(["    " + line for line in docstr.splitlines(False)])
+                output.append('    """')
+            else:
+                output.append('def {function}({args}) -> {ret}: ...'.format(
+                    function=name,
+                    args=", ".join(sig),
+                    ret=strip_or_import(signature.ret_type, module, imports)
+                ))
 
 
 def strip_or_import(typ: str, module: ModuleType, imports: List[str]) -> str:
@@ -291,10 +307,12 @@ def generate_c_property_stub(name: str, obj: object,
     if is_skipped_attribute(name):
         return
 
-    inferred = infer_prop_type(getattr(obj, '__doc__', None))
+    docstr = getattr(obj, '__doc__', None)
+    inferred = infer_prop_type(docstr)
     if not inferred:
         fget = getattr(obj, 'fget', None)
-        inferred = infer_prop_type(getattr(fget, '__doc__', None))
+        docstr = getattr(fget, '__doc__', None)
+        inferred = infer_prop_type(docstr)
     if not inferred:
         inferred = 'Any'
 
@@ -306,12 +324,18 @@ def generate_c_property_stub(name: str, obj: object,
         static_properties.append(
             f'{name}: ClassVar[{inferred}] = ...{trailing_comment}'
         )
+        if docstr:
+            static_properties.extend(['"""', *docstr.strip().splitlines(False), '"""'])
     else:  # regular property
         if readonly:
             ro_properties.append('@property')
             ro_properties.append(f'def {name}(self) -> {inferred}: ...')
+            if docstr:
+                rw_properties.extend(f"    {line}" for line in ['"""', *docstr.strip().splitlines(False), '"""'])
         else:
             rw_properties.append(f'{name}: {inferred}')
+            if docstr:
+                rw_properties.extend(['"""', *docstr.strip().splitlines(False), '"""'])
 
 
 def generate_c_type_stub(module: ModuleType,
@@ -397,8 +421,15 @@ def generate_c_type_stub(module: ModuleType,
         )
     else:
         bases_str = ''
+    class_docstring = getattr(obj, '__doc__', None)
+    if class_docstring is not None:
+        class_docstring_out = ['    """']
+        class_docstring_out.extend([f"    {line}" for line in class_docstring.splitlines(False)])
+        class_docstring_out += ['    """', "\n"]
     if types or static_properties or rw_properties or methods or ro_properties:
         output.append(f'class {class_name}{bases_str}:')
+        if class_docstring:
+            output.extend(class_docstring_out)
         for line in types:
             if output and output[-1] and \
                     not output[-1].startswith('class') and line.startswith('class'):
@@ -413,7 +444,11 @@ def generate_c_type_stub(module: ModuleType,
         for line in ro_properties:
             output.append(f'    {line}')
     else:
-        output.append(f'class {class_name}{bases_str}: ...')
+        if class_docstring:
+            output.append(f'class {class_name}{bases_str}:')
+            output.extend(class_docstring_out)
+        else:
+            output.append(f'class {class_name}{bases_str}: ...')
 
 
 def get_type_fullname(typ: type) -> str:

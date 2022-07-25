@@ -88,7 +88,8 @@ class DocStringParser:
     def add_token(self, token: tokenize.TokenInfo) -> None:
         """Process next token from the token stream."""
         if (token.type == tokenize.NAME and token.string == self.function_name and
-                self.state[-1] == STATE_INIT):
+                self.state[-1] == STATE_INIT and self.accumulator == ""):
+            # Only accept functions after newline
             self.state.append(STATE_FUNCTION_NAME)
 
         elif (token.type == tokenize.OP and token.string == '(' and
@@ -112,9 +113,20 @@ class DocStringParser:
             self.accumulator += token.string
             self.state.pop()
 
+        elif (token.type == tokenize.NAME and self.state[-1] == STATE_ARGUMENT_LIST):
+            if self.accumulator != "":
+                # Invalid argument (multiple words in an argument)
+                self.reset()
+                return
+            self.accumulator = token.string
+
         elif (token.type == tokenize.OP and token.string == ':' and
               self.state[-1] == STATE_ARGUMENT_LIST):
             self.arg_name = self.accumulator
+            if not _ARG_NAME_RE.match(self.arg_name):
+                # Invalid argument name.
+                self.reset()
+                return
             self.accumulator = ""
             self.state.append(STATE_ARGUMENT_TYPE)
 
@@ -125,6 +137,10 @@ class DocStringParser:
                 self.state.pop()
             else:
                 self.arg_name = self.accumulator
+                if not _ARG_NAME_RE.match(self.arg_name):
+                    # Invalid argument name.
+                    self.reset()
+                    return
             self.accumulator = ""
             self.state.append(STATE_ARGUMENT_DEFAULT)
 
@@ -183,8 +199,9 @@ class DocStringParser:
                 self.found = False
             self.args = []
             self.ret_type = 'Any'
+            self.accumulator = ""
             # Leave state as INIT.
-        else:
+        elif token.type not in (tokenize.ENCODING, ):
             self.accumulator += token.string
 
     def reset(self) -> None:
